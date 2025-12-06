@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+class CreateIdempotencyLocks < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :idempotency_locks do |t|
+      # Limit ensures compatibility with unique index on most databases.
+      # MySQL with utf8mb4 supports max 191 chars; adjust if needed.
+      t.string :name, null: false, limit: 255
+      t.datetime :expires_at
+      t.datetime :executed_at
+
+      t.timestamps
+    end
+
+    add_index :idempotency_locks, :name, unique: true
+    add_index :idempotency_locks, :expires_at, where: "expires_at IS NOT NULL"
+  end
+end
+

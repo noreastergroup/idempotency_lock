@@ -1,43 +1,222 @@
 # IdempotencyLock
 
-TODO: Delete this and the text below, and describe your gem
-
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/idempotency_lock`. To experiment with that code, run `bin/console` for an interactive prompt.
+A simple, robust idempotency solution for Ruby on Rails applications. Ensures operations run exactly once using database-backed locks with support for TTL expiration, multiple error handling strategies, and clean return value handling.
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
+Add this line to your application's Gemfile:
 
-Install the gem and add to the application's Gemfile by executing:
-
-```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+```ruby
+gem "idempotency_lock"
 ```
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+Then execute:
 
 ```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+bundle install
+```
+
+Generate the migration:
+
+```bash
+rails generate idempotency_lock:install
+rails db:migrate
 ```
 
 ## Usage
 
-TODO: Write usage instructions here
+### Basic Usage
+
+Wrap any operation that should only run once:
+
+```ruby
+result = IdempotencyLock.once("send-welcome-email-user-#{user.id}") do
+  UserMailer.welcome(user).deliver_now
+end
+
+if result.executed?
+  puts "Email sent!"
+else
+  puts "Email already sent (skipped)"
+end
+```
+
+The `once` method returns a `Result` object that tells you what happened:
+
+```ruby
+result.executed?  # true if the block ran
+result.skipped?   # true if skipped due to existing lock
+result.success?   # true if executed without error
+result.error?     # true if an error occurred
+result.value      # the return value of the block
+result.error      # the exception if one was raised
+```
+
+### TTL / Expiration
+
+Sometimes you want "run once per hour" instead of "run once forever":
+
+```ruby
+# Run daily report once per day
+IdempotencyLock.once("daily-report", ttl: 24.hours) do
+  ReportGenerator.daily_summary
+end
+
+# Run cleanup once per hour
+IdempotencyLock.once("hourly-cleanup", ttl: 1.hour) do
+  TempFile.cleanup_old
+end
+
+# TTL also accepts integer seconds
+IdempotencyLock.once("periodic-task", ttl: 3600) do
+  some_periodic_work
+end
+```
+
+### Error Handling
+
+Control what happens when an error occurs inside the block:
+
+```ruby
+# :keep (default) - Keep the lock, don't allow retry
+IdempotencyLock.once("risky-op", on_error: :keep) do
+  might_fail
+end
+
+# :unlock - Release the lock so another process can retry
+IdempotencyLock.once("retriable-op", on_error: :unlock) do
+  external_api_call
+end
+
+# :raise - Re-raise the exception after releasing the lock
+IdempotencyLock.once("critical-op", on_error: :raise) do
+  must_succeed_or_alert
+end
+
+# Custom handler with a Proc
+IdempotencyLock.once("custom-error", on_error: ->(e) { Bugsnag.notify(e) }) do
+  something_important
+end
+```
+
+### Manual Lock Management
+
+```ruby
+# Check if an operation is locked
+IdempotencyLock.locked?("my-operation")  # => true/false
+
+# Release a lock manually (useful for testing or manual intervention)
+IdempotencyLock.release("my-operation")
+
+# Clean up all expired locks (good for a periodic job)
+IdempotencyLock.cleanup_expired
+```
+
+### Alias
+
+The `wrap` method is available as an alias for `once`:
+
+```ruby
+IdempotencyLock.wrap("operation-name") { do_something }
+```
+
+## Use Cases
+
+### Preventing Duplicate Webhook Processing
+
+```ruby
+class WebhooksController < ApplicationController
+  def stripe
+    event_id = params[:id]
+    
+    result = IdempotencyLock.once("stripe-webhook-#{event_id}") do
+      StripeWebhookProcessor.process(params)
+    end
+    
+    head :ok
+  end
+end
+```
+
+### Ensuring One-Time Migrations
+
+```ruby
+IdempotencyLock.once("backfill-user-preferences-2024-01") do
+  User.find_each do |user|
+    user.create_preferences! unless user.preferences.present?
+  end
+end
+```
+
+### Rate-Limited Operations
+
+```ruby
+# Only send one reminder per user per day
+IdempotencyLock.once("reminder-user-#{user.id}", ttl: 24.hours) do
+  ReminderMailer.daily_reminder(user).deliver_later
+end
+```
+
+### Preventing Duplicate Sidekiq Jobs
+
+```ruby
+class ImportantJob
+  include Sidekiq::Job
+
+  def perform(record_id)
+    IdempotencyLock.once("important-job-#{record_id}", on_error: :unlock) do
+      # If this fails, another job can retry
+      ImportantService.process(record_id)
+    end
+  end
+end
+```
+
+## Database Schema
+
+The gem creates an `idempotency_locks` table with:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `name` | string (max 255) | Unique identifier for the lock |
+| `expires_at` | datetime | When the lock expires (null = never) |
+| `executed_at` | datetime | When the operation was executed |
+| `created_at` | datetime | Standard Rails timestamp |
+| `updated_at` | datetime | Standard Rails timestamp |
+
+Indexes:
+- Unique index on `name` (provides atomicity)
+- Partial index on `expires_at` where not null (for efficient TTL queries)
+
+**Note on name length:** Lock names are limited to 255 characters to ensure compatibility with database unique index limits. MySQL users with `utf8mb4` encoding may need to reduce this to 191 characters by modifying the migration before running it.
+
+## How It Works
+
+1. **Lock Acquisition**: Attempts to create a record with the given name. The unique index ensures only one process succeeds.
+
+2. **TTL Support**: If a TTL is provided, the lock includes an `expires_at` timestamp. Expired locks can be claimed by new operations via an atomic UPDATE.
+
+3. **Error Handling**: Different strategies control whether the lock is released on error, allowing for retry semantics.
+
+4. **Return Values**: The block's return value is captured and returned in the `Result` object.
+
+## Thread Safety
+
+The gem relies on database-level uniqueness constraints for atomicity. This means:
+
+- ✅ Safe across multiple processes (web servers, job workers)
+- ✅ Safe across multiple machines
+- ✅ Safe in multi-threaded environments
+- ✅ Survives application restarts
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake test` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
-
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake test` to run the tests.
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/idempotency_lock. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/[USERNAME]/idempotency_lock/blob/main/CODE_OF_CONDUCT.md).
+Bug reports and pull requests are welcome on GitHub.
 
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
-
-## Code of Conduct
-
-Everyone interacting in the IdempotencyLock project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/[USERNAME]/idempotency_lock/blob/main/CODE_OF_CONDUCT.md).

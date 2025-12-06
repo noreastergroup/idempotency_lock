@@ -1,8 +1,28 @@
+plugins:
+  - rubocop-minitest
+
 AllCops:
   TargetRubyVersion: 3.2
+  NewCops: enable
+  SuggestExtensions: false
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
 
 Style/StringLiteralsInInterpolation:
   EnforcedStyle: double_quotes
+
+# Tests often have longer methods and higher complexity - that's fine
+Metrics/MethodLength:
+  Exclude:
+    - "test/**/*"
+
+Metrics/AbcSize:
+  Exclude:
+    - "test/**/*"
+
+# `acquire` and `release` are standard lock operation names
+Naming/PredicateMethod:
+  AllowedMethods:
+    - acquire
+    - release
