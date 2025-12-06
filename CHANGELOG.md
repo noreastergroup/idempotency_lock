@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.1.2] - 2025-12-06
+
+### Fixed
+
+- Migration now works with MySQL (uses regular index instead of partial index,
+  which MySQL doesn't support)
+
+### Added
+
+- `Result#inspect` for easier debugging
+
 ## [0.1.1] - 2025-12-06
 
 ### Fixed
