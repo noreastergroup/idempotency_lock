@@ -89,6 +89,7 @@ GEM
     ruby-progressbar (1.13.0)
     securerandom (0.4.1)
     sqlite3 (2.8.1-arm64-darwin)
+    sqlite3 (2.8.1-x86_64-linux-gnu)
     stringio (3.1.9)
     timeout (0.4.4)
     tsort (0.2.0)
@@ -101,6 +102,7 @@ GEM
 
 PLATFORMS
   arm64-darwin-25
+  x86_64-linux
 
 DEPENDENCIES
   idempotency_lock!
