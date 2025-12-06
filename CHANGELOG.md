@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.1.1] - 2025-12-06
+
+### Fixed
+
+- Use optimistic locking when claiming expired locks to prevent race conditions
+  where two processes with clock skew could both claim the same lock
+
+### Changed
+
+- `now` parameter is now injectable in `Lock.acquire`, `expired?`, and `valid_lock?` for testing
+
 ## [0.1.0] - 2025-12-06
 
 ### Added

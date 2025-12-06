@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    idempotency_lock (0.1.0)
+    idempotency_lock (0.1.1)
       activerecord (>= 7.0)
       activesupport (>= 7.0)
 
