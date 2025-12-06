@@ -33,7 +33,12 @@ IdempotencyLock.logger = nil
 
 module IdempotencyLockTestHelpers
   def setup
-    # Clean up locks between tests
+    # Clean up locks before each test
+    IdempotencyLock::Lock.delete_all
+  end
+
+  def teardown
+    # Clean slate for next test
     IdempotencyLock::Lock.delete_all
   end
 end

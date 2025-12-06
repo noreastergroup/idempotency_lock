@@ -186,7 +186,7 @@ The gem creates an `idempotency_locks` table with:
 
 Indexes:
 - Unique index on `name` (provides atomicity)
-- Partial index on `expires_at` where not null (for efficient TTL queries)
+- Index on `expires_at` (partial index on PostgreSQL/SQLite, regular index on MySQL)
 
 **Note on name length:** Lock names are limited to 255 characters to ensure compatibility with database unique index limits. MySQL users with `utf8mb4` encoding may need to reduce this to 191 characters by modifying the migration before running it.
 

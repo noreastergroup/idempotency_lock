@@ -13,7 +13,14 @@ class CreateIdempotencyLocks < ActiveRecord::Migration<%= migration_version %>
     end
 
     add_index :idempotency_locks, :name, unique: true
-    add_index :idempotency_locks, :expires_at, where: "expires_at IS NOT NULL"
+
+    # Partial indexes are more efficient but not supported by MySQL.
+    # Use a regular index for MySQL, partial index for PostgreSQL/SQLite.
+    if ActiveRecord::Base.connection.adapter_name.downcase.include?("mysql")
+      add_index :idempotency_locks, :expires_at
+    else
+      add_index :idempotency_locks, :expires_at, where: "expires_at IS NOT NULL"
+    end
   end
 end
 

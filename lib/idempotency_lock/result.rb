@@ -40,5 +40,14 @@ module IdempotencyLock
     def success?
       @executed && !error?
     end
+
+    # @return [String] human-readable representation for debugging
+    def inspect
+      parts = ["executed=#{@executed}"]
+      parts << "skipped=#{@skipped}" if @skipped
+      parts << "value=#{@value.inspect}" if @value
+      parts << "error=#{@error.class}" if @error
+      "#<IdempotencyLock::Result #{parts.join(" ")}>"
+    end
   end
 end
