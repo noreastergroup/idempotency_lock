@@ -56,12 +56,12 @@ module IdempotencyLock
         return false if existing.nil?
         return false unless existing.expired?(now: now)
 
-        # Optimistic locking: use the observed expires_at in the WHERE clause.
+        # Optimistic locking: use the observed updated_at in the WHERE clause.
         # This prevents a race where two processes both see an expired lock and
         # both try to claim it. Only one UPDATE will match; the other returns 0.
-        # This is safer than `WHERE expires_at < now` which could allow a second
-        # process to steal a lock if the first used a short TTL.
-        updated = where(name: name, expires_at: existing.expires_at)
+        # We use updated_at rather than expires_at because it's system-managed
+        # and always moves forward, making it more reliable for concurrency control.
+        updated = where(name: name, updated_at: existing.updated_at)
                   .update_all(expires_at: expires_at, executed_at: now, updated_at: now)
 
         updated.positive?

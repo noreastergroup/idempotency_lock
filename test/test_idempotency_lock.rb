@@ -273,7 +273,7 @@ end
 class TestIdempotencyLockOptimisticLocking < Minitest::Test
   include IdempotencyLockTestHelpers
 
-  # This test verifies why optimistic locking (WHERE expires_at = observed_value)
+  # This test verifies why optimistic locking (WHERE updated_at = observed_value)
   # is better than a simple expiration check (WHERE expires_at < now).
   #
   # Scenario: Process A acquires with a SHORT TTL, and Process B has a clock
@@ -287,8 +287,8 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
       executed_at: 2.minutes.ago
     )
 
-    # Both processes read the SAME expired state (simulating concurrent read)
-    observed_expires_at = IdempotencyLock::Lock.find_by(name: "short-ttl-skew").expires_at
+    # Both processes read the SAME state (simulating concurrent read)
+    observed_updated_at = IdempotencyLock::Lock.find_by(name: "short-ttl-skew").updated_at
 
     process_a_clock = Time.current
     short_ttl = 10.seconds
@@ -297,15 +297,15 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
     # A acquires with short TTL - new expires_at is only 10 seconds out
     new_expires_at_from_a = process_a_clock + short_ttl
 
-    # With optimistic locking: WHERE expires_at = observed_value
+    # With optimistic locking: WHERE updated_at = observed_value
     result_a = IdempotencyLock::Lock
-               .where(name: "short-ttl-skew", expires_at: observed_expires_at)
-               .update_all(expires_at: new_expires_at_from_a, executed_at: process_a_clock)
+               .where(name: "short-ttl-skew", updated_at: observed_updated_at)
+               .update_all(expires_at: new_expires_at_from_a, executed_at: process_a_clock, updated_at: process_a_clock)
 
-    # B tries with same observed value - should FAIL because expires_at changed
+    # B tries with same observed value - should FAIL because updated_at changed
     result_b = IdempotencyLock::Lock
-               .where(name: "short-ttl-skew", expires_at: observed_expires_at)
-               .update_all(expires_at: process_b_clock + 1.hour, executed_at: process_b_clock)
+               .where(name: "short-ttl-skew", updated_at: observed_updated_at)
+               .update_all(expires_at: process_b_clock + 1.hour, executed_at: process_b_clock, updated_at: process_b_clock)
 
     assert_equal 1, result_a, "A should succeed"
     assert_equal 0, result_b, "B should fail - optimistic locking prevents double claim"
@@ -324,19 +324,19 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
       executed_at: 2.minutes.ago
     )
 
-    # Both "processes" observe the same expires_at before either updates
-    observed_expires_at = IdempotencyLock::Lock.find_by(name: "concurrent-update").expires_at
+    # Both "processes" observe the same updated_at before either updates
+    observed_updated_at = IdempotencyLock::Lock.find_by(name: "concurrent-update").updated_at
     now = Time.current
 
     # First update wins
     first = IdempotencyLock::Lock
-            .where(name: "concurrent-update", expires_at: observed_expires_at)
-            .update_all(expires_at: now + 1.hour, executed_at: now)
+            .where(name: "concurrent-update", updated_at: observed_updated_at)
+            .update_all(expires_at: now + 1.hour, executed_at: now, updated_at: now)
 
-    # Second update fails - expires_at no longer matches
+    # Second update fails - updated_at no longer matches
     second = IdempotencyLock::Lock
-             .where(name: "concurrent-update", expires_at: observed_expires_at)
-             .update_all(expires_at: now + 2.hours, executed_at: now)
+             .where(name: "concurrent-update", updated_at: observed_updated_at)
+             .update_all(expires_at: now + 2.hours, executed_at: now, updated_at: now)
 
     assert_equal 1, first, "First update should affect 1 row"
     assert_equal 0, second, "Second update should affect 0 rows"
