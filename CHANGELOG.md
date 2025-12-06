@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+## [0.1.3] - 2025-12-06
+
+### Changed
+
+- Use `updated_at` instead of `expires_at` for optimistic locking (more reliable
+  since it's system-managed and always moves forward)
+
 ## [0.1.2] - 2025-12-06
 
 ### Fixed
