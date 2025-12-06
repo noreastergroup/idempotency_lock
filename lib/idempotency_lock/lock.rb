@@ -24,14 +24,14 @@ module IdempotencyLock
 
     # Check if this lock has expired
     # @return [Boolean]
-    def expired?
-      expires_at.present? && expires_at < Time.current
+    def expired?(now: Time.current)
+      expires_at.present? && expires_at < now
     end
 
     # Check if this lock is still valid (not expired)
     # @return [Boolean]
-    def valid_lock?
-      expires_at.nil? || expires_at >= Time.current
+    def valid_lock?(now: Time.current)
+      expires_at.nil? || expires_at >= now
     end
 
     class << self
@@ -40,7 +40,7 @@ module IdempotencyLock
       #
       # @param name [String] unique identifier for the operation
       # @param expires_at [Time, nil] when the lock should expire (nil = never)
-      # @param now [Time] current time reference
+      # @param now [Time] current time reference (injectable for testing)
       # @return [Boolean] true if lock was acquired
       def acquire(name, expires_at: nil, now: Time.current)
         # Try to insert first (most common case for new keys)
@@ -51,10 +51,17 @@ module IdempotencyLock
           # Lock exists, check if it's expired
         end
 
-        # Atomic update: claim the lock only if it's expired
-        # Returns number of rows updated (0 or 1)
-        updated = where(name: name)
-                  .where("expires_at IS NOT NULL AND expires_at < ?", now)
+        # Check if an existing lock is expired and can be claimed
+        existing = find_by(name: name)
+        return false if existing.nil?
+        return false unless existing.expired?(now: now)
+
+        # Optimistic locking: use the observed expires_at in the WHERE clause.
+        # This prevents a race where two processes both see an expired lock and
+        # both try to claim it. Only one UPDATE will match; the other returns 0.
+        # This is safer than `WHERE expires_at < now` which could allow a second
+        # process to steal a lock if the first used a short TTL.
+        updated = where(name: name, expires_at: existing.expires_at)
                   .update_all(expires_at: expires_at, executed_at: now, updated_at: now)
 
         updated.positive?

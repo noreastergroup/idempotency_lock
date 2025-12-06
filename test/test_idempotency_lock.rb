@@ -269,3 +269,76 @@ class TestIdempotencyLockResult < Minitest::Test
     assert_equal error, result.error
   end
 end
+
+class TestIdempotencyLockOptimisticLocking < Minitest::Test
+  include IdempotencyLockTestHelpers
+
+  # This test verifies why optimistic locking (WHERE expires_at = observed_value)
+  # is better than a simple expiration check (WHERE expires_at < now).
+  #
+  # Scenario: Process A acquires with a SHORT TTL, and Process B has a clock
+  # that's ahead. Without optimistic locking, B could steal A's lock because
+  # A's new expires_at is already "expired" from B's perspective.
+  def test_short_ttl_with_clock_skew_only_one_wins
+    # Create an expired lock
+    IdempotencyLock::Lock.create!(
+      name: "short-ttl-skew",
+      expires_at: 1.minute.ago,
+      executed_at: 2.minutes.ago
+    )
+
+    # Both processes read the SAME expired state (simulating concurrent read)
+    observed_expires_at = IdempotencyLock::Lock.find_by(name: "short-ttl-skew").expires_at
+
+    process_a_clock = Time.current
+    short_ttl = 10.seconds
+    process_b_clock = process_a_clock + 1.minute # B's clock is way ahead
+
+    # A acquires with short TTL - new expires_at is only 10 seconds out
+    new_expires_at_from_a = process_a_clock + short_ttl
+
+    # With optimistic locking: WHERE expires_at = observed_value
+    result_a = IdempotencyLock::Lock
+               .where(name: "short-ttl-skew", expires_at: observed_expires_at)
+               .update_all(expires_at: new_expires_at_from_a, executed_at: process_a_clock)
+
+    # B tries with same observed value - should FAIL because expires_at changed
+    result_b = IdempotencyLock::Lock
+               .where(name: "short-ttl-skew", expires_at: observed_expires_at)
+               .update_all(expires_at: process_b_clock + 1.hour, executed_at: process_b_clock)
+
+    assert_equal 1, result_a, "A should succeed"
+    assert_equal 0, result_b, "B should fail - optimistic locking prevents double claim"
+
+    # WITHOUT optimistic locking (using WHERE expires_at < now), B would check:
+    #   new_expires_at_from_a < process_b_clock
+    #   = (now + 10 seconds) < (now + 1 minute)
+    #   = TRUE  <-- B would also succeed! That's the bug optimistic locking prevents.
+  end
+
+  # Demonstrates the race condition at the UPDATE level
+  def test_concurrent_updates_only_one_wins
+    IdempotencyLock::Lock.create!(
+      name: "concurrent-update",
+      expires_at: 1.minute.ago,
+      executed_at: 2.minutes.ago
+    )
+
+    # Both "processes" observe the same expires_at before either updates
+    observed_expires_at = IdempotencyLock::Lock.find_by(name: "concurrent-update").expires_at
+    now = Time.current
+
+    # First update wins
+    first = IdempotencyLock::Lock
+            .where(name: "concurrent-update", expires_at: observed_expires_at)
+            .update_all(expires_at: now + 1.hour, executed_at: now)
+
+    # Second update fails - expires_at no longer matches
+    second = IdempotencyLock::Lock
+             .where(name: "concurrent-update", expires_at: observed_expires_at)
+             .update_all(expires_at: now + 2.hours, executed_at: now)
+
+    assert_equal 1, first, "First update should affect 1 row"
+    assert_equal 0, second, "Second update should affect 0 rows"
+  end
+end
