@@ -303,9 +303,10 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
                .update_all(expires_at: new_expires_at_from_a, executed_at: process_a_clock, updated_at: process_a_clock)
 
     # B tries with same observed value - should FAIL because updated_at changed
+    new_expires_at_from_b = process_b_clock + 1.hour
     result_b = IdempotencyLock::Lock
                .where(name: "short-ttl-skew", updated_at: observed_updated_at)
-               .update_all(expires_at: process_b_clock + 1.hour, executed_at: process_b_clock, updated_at: process_b_clock)
+               .update_all(expires_at: new_expires_at_from_b, executed_at: process_b_clock, updated_at: process_b_clock)
 
     assert_equal 1, result_a, "A should succeed"
     assert_equal 0, result_b, "B should fail - optimistic locking prevents double claim"
