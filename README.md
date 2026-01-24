@@ -73,6 +73,49 @@ IdempotencyLock.once("periodic-task", ttl: 3600) do
 end
 ```
 
+### Temporary Locks (Auto-Release)
+
+Use `temporarily` when you want exclusive execution but don't need permanent idempotency. The lock is automatically released when the block completes (success or error):
+
+```ruby
+# Lock is held only while the block runs
+IdempotencyLock.temporarily("process-payment-#{payment.id}") do
+  PaymentProcessor.charge(payment)
+end
+# Lock is now released - another call can acquire it
+```
+
+This is useful for:
+- Preventing concurrent processing of the same resource
+- Mutex-style synchronization across processes/servers
+- Operations that should be exclusive but retriable
+
+#### Waiting for Lock Availability
+
+By default, `temporarily` returns immediately if the lock is held. Use `wait:` to poll until the lock becomes available:
+
+```ruby
+# Wait up to 5 seconds for lock, then skip if still unavailable
+result = IdempotencyLock.temporarily("exclusive-job", wait: 5.seconds) do
+  process_job
+end
+
+if result.skipped?
+  puts "Could not acquire lock within timeout"
+end
+```
+
+#### TTL for Crash Protection
+
+Combine with `ttl:` to ensure locks are released even if the process crashes:
+
+```ruby
+IdempotencyLock.temporarily("long-job", ttl: 10.minutes, wait: 30.seconds) do
+  # If process crashes, lock expires after 10 minutes
+  long_running_task
+end
+```
+
 ### Error Handling
 
 Control what happens when an error occurs inside the block:
@@ -168,6 +211,17 @@ class ImportantJob
       # If this fails, another job can retry
       ImportantService.process(record_id)
     end
+  end
+end
+```
+
+### Exclusive Resource Processing
+
+```ruby
+# Ensure only one process handles a payment at a time
+def process_payment(payment_id)
+  IdempotencyLock.temporarily("payment-#{payment_id}", wait: 10.seconds) do
+    Payment.find(payment_id).process!
   end
 end
 ```

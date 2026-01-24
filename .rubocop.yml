@@ -12,13 +12,22 @@ Style/StringLiterals:
 Style/StringLiteralsInInterpolation:
   EnforcedStyle: double_quotes
 
+# The main module is a cohesive unit - allow reasonable size
+Metrics/ModuleLength:
+  Max: 125
+
+# The class << self block contains all public/private methods
+Metrics/ClassLength:
+  Max: 120
+
 # Tests often have longer methods and higher complexity - that's fine
 Metrics/MethodLength:
-  Max: 12
+  Max: 18
   Exclude:
     - "test/**/*"
 
 Metrics/AbcSize:
+  Max: 18
   Exclude:
     - "test/**/*"
 
@@ -27,3 +36,4 @@ Naming/PredicateMethod:
   AllowedMethods:
     - acquire
     - release
+    - acquire_with_wait

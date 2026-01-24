@@ -27,6 +27,9 @@ module IdempotencyLock
   ON_ERROR_KEEP_LOCKED = :keep    # Keep lock in place (default)
   ON_ERROR_RAISE = :raise         # Re-raise after cleanup/logging
 
+  # Wait retry interval for temporarily with wait option
+  WAIT_RETRY_INTERVAL = 0.1 # 100ms between retry attempts
+
   class << self
     # Execute a block exactly once for the given operation name.
     #
@@ -53,6 +56,40 @@ module IdempotencyLock
 
     # Convenience alias for `once`
     alias wrap once
+
+    # Execute a block with a temporary lock that is automatically released
+    # when the block completes (success or error).
+    #
+    # Unlike `once`, this method always releases the lock after execution,
+    # making it suitable for mutex-style synchronization rather than idempotency.
+    #
+    # @param name [String] unique identifier for this lock
+    # @param ttl [ActiveSupport::Duration, Integer, nil] time-to-live for crash protection
+    # @param wait [ActiveSupport::Duration, Integer, nil] how long to wait for lock availability
+    # @yield The block to execute while holding the lock
+    # @return [Result] containing execution status and return value
+    def temporarily(name, ttl: nil, wait: nil)
+      raise ArgumentError, "Block required" unless block_given?
+
+      acquired = acquire_with_wait(name, ttl: ttl, wait: wait)
+
+      unless acquired
+        log_debug("Lock already held for '#{name}', skipping execution")
+        return Result.new(executed: false, skipped: true)
+      end
+
+      log_debug("Temporary lock acquired for '#{name}', executing block")
+      begin
+        value = yield
+        Result.new(executed: true, value: value)
+      rescue StandardError => e
+        log_error("Exception in temporary lock block '#{name}': #{e.class} - #{e.message}")
+        Result.new(executed: true, error: e)
+      ensure
+        Lock.release(name)
+        log_debug("Temporary lock released for '#{name}'")
+      end
+    end
 
     # Release a lock manually (useful for testing or manual intervention)
     #
@@ -85,6 +122,29 @@ module IdempotencyLock
     end
 
     private
+
+    def acquire_with_wait(name, ttl:, wait:)
+      now = Time.current
+      expires_at = calculate_expires_at(ttl, now)
+      acquired = Lock.acquire(name, expires_at: expires_at, now: now)
+
+      return true if acquired
+      return false if wait.nil?
+
+      # Calculate deadline for waiting
+      wait_seconds = wait.respond_to?(:to_f) ? wait.to_f : wait.to_i
+      deadline = Time.current + wait_seconds
+
+      while Time.current < deadline
+        sleep(WAIT_RETRY_INTERVAL)
+        now = Time.current
+        expires_at = calculate_expires_at(ttl, now)
+        acquired = Lock.acquire(name, expires_at: expires_at, now: now)
+        return true if acquired
+      end
+
+      false
+    end
 
     def calculate_expires_at(ttl, now)
       return nil if ttl.nil?

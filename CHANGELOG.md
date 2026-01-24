@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+## [0.2.0] - 2025-01-24
+
+### Added
+
+- `IdempotencyLock.temporarily` - Execute a block with an ephemeral lock that is
+  automatically released when the block completes (success or error)
+- `wait:` parameter for `temporarily` - Poll for lock availability with configurable
+  timeout (e.g., `wait: 5.seconds`)
+
 ## [0.1.3] - 2025-12-06
 
 ### Changed

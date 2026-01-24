@@ -343,3 +343,161 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
     assert_equal 0, second, "Second update should affect 0 rows"
   end
 end
+
+class TestIdempotencyLockTemporarily < Minitest::Test
+  include IdempotencyLockTestHelpers
+
+  def test_temporarily_executes_block_and_returns_value
+    executed = false
+
+    result = IdempotencyLock.temporarily("temp-test") do
+      executed = true
+      "return value"
+    end
+
+    assert executed, "Block should have been executed"
+    assert_predicate result, :executed?
+    assert_predicate result, :success?
+    refute_predicate result, :skipped?
+    assert_equal "return value", result.value
+  end
+
+  def test_temporarily_releases_lock_after_success
+    IdempotencyLock.temporarily("temp-release") { "done" }
+
+    # Lock should be released
+    refute IdempotencyLock.locked?("temp-release")
+  end
+
+  def test_temporarily_releases_lock_after_error
+    result = IdempotencyLock.temporarily("temp-error") do
+      raise StandardError, "boom"
+    end
+
+    assert_predicate result, :executed?
+    assert_predicate result, :error?
+    assert_kind_of StandardError, result.error
+
+    # Lock should be released even on error
+    refute IdempotencyLock.locked?("temp-error")
+  end
+
+  def test_temporarily_skips_when_lock_held
+    # Acquire lock manually
+    IdempotencyLock::Lock.acquire("temp-held")
+
+    call_count = 0
+    result = IdempotencyLock.temporarily("temp-held") { call_count += 1 }
+
+    assert_equal 0, call_count, "Block should not execute when lock is held"
+    refute_predicate result, :executed?
+    assert_predicate result, :skipped?
+  end
+
+  def test_temporarily_allows_re_execution_after_release
+    call_count = 0
+
+    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
+    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
+    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
+
+    assert_equal 3, call_count, "Block should execute each time since lock is released"
+  end
+
+  def test_temporarily_requires_block
+    assert_raises(ArgumentError) do
+      IdempotencyLock.temporarily("no-block")
+    end
+  end
+
+  def test_temporarily_with_ttl
+    IdempotencyLock.temporarily("temp-ttl", ttl: 3600) { "done" }
+
+    # Lock should be released immediately, not after TTL
+    refute IdempotencyLock.locked?("temp-ttl")
+  end
+
+  def test_temporarily_different_names_work_independently
+    results = []
+
+    IdempotencyLock.temporarily("temp-a") { results << "a" }
+    IdempotencyLock.temporarily("temp-b") { results << "b" }
+
+    assert_equal %w[a b], results
+  end
+end
+
+class TestIdempotencyLockTemporarilyWait < Minitest::Test
+  include IdempotencyLockTestHelpers
+
+  def test_wait_acquires_lock_when_released
+    # Create a lock with a very short TTL that will expire during wait
+    IdempotencyLock::Lock.create!(
+      name: "wait-test",
+      expires_at: 0.15.seconds.from_now, # Expires after 150ms
+      executed_at: Time.current
+    )
+
+    call_count = 0
+    result = IdempotencyLock.temporarily("wait-test", wait: 1) { call_count += 1 }
+
+    assert_equal 1, call_count, "Block should execute after lock expires"
+    assert_predicate result, :executed?
+  end
+
+  def test_wait_times_out_and_skips
+    # Acquire lock and don't release it
+    IdempotencyLock::Lock.acquire("wait-timeout")
+
+    call_count = 0
+    start_time = Time.current
+    result = IdempotencyLock.temporarily("wait-timeout", wait: 0.25) { call_count += 1 }
+    elapsed = Time.current - start_time
+
+    assert_equal 0, call_count, "Block should not execute when timeout reached"
+    assert_predicate result, :skipped?
+    refute_predicate result, :executed?
+    # Should have waited approximately 0.25 seconds (with some tolerance)
+    assert_operator elapsed, :>=, 0.2
+    assert_operator elapsed, :<, 0.5
+  end
+
+  def test_wait_with_duration
+    # Acquire lock and don't release it
+    IdempotencyLock::Lock.acquire("wait-duration")
+
+    start_time = Time.current
+    IdempotencyLock.temporarily("wait-duration", wait: 0.2.seconds) { "done" }
+    elapsed = Time.current - start_time
+
+    # Should have waited approximately 0.2 seconds
+    assert_operator elapsed, :>=, 0.15
+    assert_operator elapsed, :<, 0.4
+  end
+
+  def test_wait_with_numeric_seconds
+    # Acquire lock and don't release it
+    IdempotencyLock::Lock.acquire("wait-numeric")
+
+    start_time = Time.current
+    IdempotencyLock.temporarily("wait-numeric", wait: 0.2) { "done" }
+    elapsed = Time.current - start_time
+
+    # Should have waited approximately 0.2 seconds
+    assert_operator elapsed, :>=, 0.15
+    assert_operator elapsed, :<, 0.4
+  end
+
+  def test_wait_nil_skips_immediately
+    # Acquire lock
+    IdempotencyLock::Lock.acquire("wait-nil")
+
+    start_time = Time.current
+    result = IdempotencyLock.temporarily("wait-nil", wait: nil) { "done" }
+    elapsed = Time.current - start_time
+
+    assert_predicate result, :skipped?
+    # Should return almost immediately (no waiting)
+    assert_operator elapsed, :<, 0.05
+  end
+end
