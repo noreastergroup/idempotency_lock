@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/object/blank"
+
 module IdempotencyLock
   # Validation for the public API's arguments. Invalid input raises
   # ArgumentError up front instead of being mistaken for "lock already held".
@@ -14,7 +16,9 @@ module IdempotencyLock
       end
 
       name = name.to_s
-      raise ArgumentError, "Lock name must not be blank" if name.strip.empty?
+      # blank? (not strip.empty?) so Unicode whitespace such as U+00A0 is
+      # rejected here, matching the model's presence validation.
+      raise ArgumentError, "Lock name must not be blank" if name.blank?
       if name.length > MAX_NAME_LENGTH
         raise ArgumentError, "Lock name is too long (#{name.length} > #{MAX_NAME_LENGTH} characters)"
       end
@@ -23,19 +27,26 @@ module IdempotencyLock
     end
 
     # ActiveSupport::Duration reports is_a?(Numeric) as true, so this accepts
-    # both plain seconds and durations like 5.minutes.
+    # both plain seconds and durations like 5.minutes. NaN and Infinity are
+    # rejected: they can't be added to a Time.
     def validate_ttl!(ttl)
-      return if ttl.nil? || (ttl.is_a?(Numeric) && ttl.positive?)
+      return if ttl.nil? || (finite_number?(ttl) && ttl.positive?)
 
       raise ArgumentError, "ttl must be a positive number of seconds or a Duration, got #{ttl.inspect}"
     end
 
     # @return [Float, nil] the wait in seconds
+    # NaN and Infinity are rejected: NaN would silently skip without waiting,
+    # and Infinity would poll forever.
     def normalize_wait!(wait)
       return nil if wait.nil?
-      return wait.to_f if wait.is_a?(Numeric) && !wait.negative?
+      return wait.to_f if finite_number?(wait) && !wait.negative?
 
       raise ArgumentError, "wait must be a non-negative number of seconds or a Duration, got #{wait.inspect}"
+    end
+
+    def finite_number?(value)
+      value.is_a?(Numeric) && value.to_f.finite?
     end
 
     def validate_on_error!(on_error, strategies)

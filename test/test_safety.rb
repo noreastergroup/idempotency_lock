@@ -7,7 +7,7 @@ class TestIdempotencyLockArgumentValidation < Minitest::Test
   include IdempotencyLockTestHelpers
 
   def test_invalid_names_raise_instead_of_silently_skipping
-    [nil, "", "   ", "a" * 256, 123].each do |name|
+    [nil, "", "   ", "\u00a0", "\u3000\t", "a" * 256, 123].each do |name|
       ran = false
       assert_raises(ArgumentError, "name: #{name.inspect}") do
         IdempotencyLock.once(name) { ran = true }
@@ -57,7 +57,7 @@ class TestIdempotencyLockArgumentValidation < Minitest::Test
   end
 
   def test_invalid_ttl_raises
-    [0, -5, "60"].each do |ttl|
+    [0, -5, "60", Float::NAN, Float::INFINITY].each do |ttl|
       assert_raises(ArgumentError, "ttl: #{ttl.inspect}") do
         IdempotencyLock.once("bad-ttl", ttl: ttl) { :ok }
       end

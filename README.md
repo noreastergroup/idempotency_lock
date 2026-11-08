@@ -93,7 +93,7 @@ IdempotencyLock.once("periodic-task", ttl: 3600) do
 end
 ```
 
-Expiry is checked against the clock of the server doing the check, so keep server clocks synchronized (NTP). Clock skew can shorten or lengthen a TTL window, but never lets two processes claim the same expired lock.
+Expiry is checked against the clock of the server doing the check, so keep server clocks synchronized (NTP). Clock skew can shorten or lengthen a TTL window: a server whose clock runs ahead can see a lock as expired, and take it over, while the previous holder is still running. Pick TTLs with a margin well above your expected clock drift. (When several callers race to claim the *same* expired lock, the owner-token check still guarantees only one succeeds.)
 
 ### Temporary Locks (Auto-Release)
 
@@ -323,7 +323,7 @@ Indexes:
 
 1. **Lock Acquisition**: Inserts a row with the given name and a fresh random owner token. The unique index ensures only one process succeeds. The insert runs in a savepoint so a conflict never breaks a surrounding transaction.
 
-2. **TTL Support**: If a TTL is provided, the lock includes an `expires_at` timestamp. An expired lock is claimed with a conditional `UPDATE ... WHERE owner_token = <observed token>`, so if several processes race for the same expired lock, exactly one wins.
+2. **TTL Support**: If a TTL is provided, the lock includes an `expires_at` timestamp. An expired lock is claimed with a conditional `UPDATE ... WHERE owner_token = <observed token>`, so if several processes race to claim the same expired lock, exactly one wins. Whether a lock counts as expired depends on the claiming server's clock (see [TTL / Expiration](#ttl--expiration)).
 
 3. **Owner-Safe Release**: Releases delete the row only if it still carries the releasing process's owner token. A process whose lock expired and was taken over cannot delete the new holder's lock.
 
@@ -338,7 +338,7 @@ The gem relies on database-level uniqueness constraints for atomicity. This mean
 - ✅ Safe across multiple processes (web servers, job workers) and machines
 - ✅ Safe across threads (each thread uses its own database connection)
 - ✅ Survives application restarts
-- ⚠️ Mutual exclusion from `temporarily` holds only while the TTL has not expired, so pick a TTL longer than the block's runtime
+- ⚠️ Mutual exclusion from `temporarily` holds only while the TTL has not expired (as judged by each server's clock), so pick a TTL longer than the block's runtime plus expected clock drift
 
 ## Development
 

@@ -291,9 +291,11 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
     assert_equal token_a, IdempotencyLock::Lock.find_by(name: "concurrent-claim").owner_token
   end
 
-  # Process A claims with a SHORT TTL; process B's clock is far ahead, so A's
-  # new lock already looks expired to B. B must still fail, because the claim is
-  # conditioned on the owner_token B observed, not on B's view of expiry.
+  # A and B race to claim the SAME expired lock (both read the old token).
+  # A claims with a SHORT TTL and B's clock is far ahead, so A's new lock
+  # already looks expired to B. B's claim must still fail, because it is
+  # conditioned on the stale owner_token B observed. (A fresh read by B is a
+  # different case; see test_clock_skew_allows_takeover_after_a_fresh_read.)
   def test_short_ttl_with_clock_skew_only_one_wins
     create_expired_lock("short-ttl-skew")
     stale_snapshot = IdempotencyLock::Lock.find_by(name: "short-ttl-skew")
@@ -309,6 +311,22 @@ class TestIdempotencyLockOptimisticLocking < Minitest::Test
 
     assert token_a, "A should succeed"
     assert_nil token_b, "B should fail even though A's lock looks expired on B's clock"
+  end
+
+  # Documents a known limitation (see README "TTL / Expiration"): expiry is
+  # judged by the claiming server's clock, so a server whose clock is ahead can
+  # take over a lock that is still live from the holder's point of view.
+  def test_clock_skew_allows_takeover_after_a_fresh_read
+    holder_clock = Time.current
+    holder_token = IdempotencyLock::Lock.acquire("skewed", expires_at: holder_clock + 10.seconds,
+                                                           now: holder_clock)
+
+    skewed_token = IdempotencyLock::Lock.acquire("skewed", expires_at: holder_clock + 2.minutes,
+                                                           now: holder_clock + 1.minute)
+
+    assert skewed_token, "a fast clock sees the holder's lock as expired"
+    refute IdempotencyLock::Lock.release("skewed", owner_token: holder_token),
+           "but the original holder still cannot release the new holder's lock"
   end
 
   def test_reclaim_issues_a_new_owner_token
@@ -484,7 +502,7 @@ class TestIdempotencyLockTemporarilyWait < Minitest::Test
   end
 
   def test_wait_rejects_invalid_values
-    [-1, "5", :forever].each do |wait|
+    [-1, "5", :forever, Float::NAN, Float::INFINITY].each do |wait|
       assert_raises(ArgumentError, "wait: #{wait.inspect}") do
         IdempotencyLock.temporarily("wait-invalid", wait: wait) { "done" }
       end
