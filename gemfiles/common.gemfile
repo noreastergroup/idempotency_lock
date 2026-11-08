@@ -1,0 +1,22 @@
+# frozen_string_literal: true
+
+# Development dependencies shared by ../Gemfile and the per-ActiveRecord-version
+# gemfiles in this directory (used by CI; see .github/workflows/main.yml).
+
+gem "irb"
+gem "rake", "~> 13.0"
+
+gem "minitest", "~> 5.16"
+
+gem "rubocop", "~> 1.21"
+gem "rubocop-minitest", require: false
+
+# Database drivers for running the suite against a real server via
+# DATABASE_URL. Install with: BUNDLE_WITH=postgres (or mysql) bundle install
+group :postgres, optional: true do
+  gem "pg"
+end
+
+group :mysql, optional: true do
+  gem "mysql2"
+end

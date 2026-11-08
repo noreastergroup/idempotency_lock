@@ -3,10 +3,15 @@
 class CreateIdempotencyLocks < ActiveRecord::Migration<%= migration_version %>
   def change
     create_table :idempotency_locks do |t|
-      # Limit ensures compatibility with unique index on most databases.
-      # MySQL with utf8mb4 supports max 191 chars; adjust if needed.
+      # Must match IdempotencyLock::MAX_NAME_LENGTH (255). Modern MySQL
+      # (InnoDB, DYNAMIC row format) can index 255 utf8mb4 characters; very old
+      # MySQL setups limited to 767-byte index keys need 191 here instead.
       t.string :name, null: false, limit: 255
+      # Random token identifying the current lock holder, so a process can only
+      # release a lock it still owns.
+      t.string :owner_token, limit: 36
       t.datetime :expires_at
+      # When the lock was acquired (i.e. when the block started running).
       t.datetime :executed_at
 
       t.timestamps
@@ -16,11 +21,10 @@ class CreateIdempotencyLocks < ActiveRecord::Migration<%= migration_version %>
 
     # Partial indexes are more efficient but not supported by MySQL.
     # Use a regular index for MySQL, partial index for PostgreSQL/SQLite.
-    if ActiveRecord::Base.connection.adapter_name.downcase.include?("mysql")
+    if connection.adapter_name.downcase.include?("mysql")
       add_index :idempotency_locks, :expires_at
     else
       add_index :idempotency_locks, :expires_at, where: "expires_at IS NOT NULL"
     end
   end
 end
-

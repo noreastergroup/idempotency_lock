@@ -10,9 +10,10 @@ Gem::Specification.new do |spec|
 
   spec.summary = "Database-backed idempotency locks for Ruby on Rails"
   spec.description = <<~DESC
-    A simple, robust idempotency solution for Rails applications. Ensures operations
-    run exactly once using database-backed locks with support for TTL expiration,
-    multiple error handling strategies, and clean return value handling.
+    A simple, robust idempotency solution for Rails applications. Guarantees an
+    operation runs at most once per key (or per TTL window) across processes using
+    database-backed locks, with TTL expiration, owner-safe release, multiple error
+    handling strategies, and clean return value handling.
   DESC
   spec.homepage = "https://github.com/noreastergroup/idempotency_lock"
   spec.license = "MIT"
@@ -29,7 +30,7 @@ Gem::Specification.new do |spec|
   spec.files = IO.popen(%w[git ls-files -z], chdir: __dir__, err: IO::NULL) do |ls|
     ls.readlines("\x0", chomp: true).reject do |f|
       (f == gemspec) ||
-        f.start_with?(*%w[bin/ Gemfile .gitignore test/ .github/ .rubocop.yml])
+        f.start_with?(*%w[bin/ Gemfile gemfiles/ .gitignore test/ .github/ .rubocop.yml])
     end
   end
   spec.bindir = "exe"
@@ -37,6 +38,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   # Runtime dependencies
-  spec.add_dependency "activerecord", ">= 7.0"
-  spec.add_dependency "activesupport", ">= 7.0"
+  spec.add_dependency "activerecord", ">= 7.1"
+  spec.add_dependency "activesupport", ">= 7.1"
 end
