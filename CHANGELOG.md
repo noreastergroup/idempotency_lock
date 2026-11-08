@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 ### Upgrading
 
 - **Run the upgrade migration before deploying:** `rails generate idempotency_lock:upgrade && rails db:migrate`
