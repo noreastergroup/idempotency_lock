@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+class AddOwnerTokenToIdempotencyLocks < ActiveRecord::Migration<%= migration_version %>
+  def change
+    # Random token identifying the current lock holder, so a process can only
+    # release a lock it still owns. Required by idempotency_lock >= 0.3.0.
+    add_column :idempotency_locks, :owner_token, :string, limit: 36
+  end
+end

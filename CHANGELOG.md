@@ -1,6 +1,72 @@
 ## [Unreleased]
 
-## [0.2.0] - 2025-01-24
+## [0.3.0] - 2026-11-07
+
+### Upgrading
+
+- **Run the upgrade migration before deploying:** `rails generate idempotency_lock:upgrade && rails db:migrate`
+  (adds the `owner_token` column).
+- Minimum supported ActiveRecord / ActiveSupport is now **7.1** (7.0 is end-of-life).
+- Invalid arguments now raise `ArgumentError` instead of being silently accepted
+  (see "Fixed" below).
+
+### Fixed
+
+- **A process could release a lock it no longer held.** If a lock's TTL lapsed
+  mid-block and another process claimed it, the original holder's release
+  (`temporarily`'s auto-release, or `once` with `:unlock` / `:raise` / a callable)
+  deleted the new holder's lock, allowing concurrent execution. Locks now carry
+  a random owner token and releases only delete the caller's own lock.
+- Invalid lock names (`nil`, blank, non-String/Symbol, or over 255 characters)
+  were reported as `skipped?` without running the block. They now raise
+  `ArgumentError`.
+- An unknown `on_error` value (e.g. a typo like `:unlok`) silently kept the lock.
+  It now raises `ArgumentError`. Invalid `ttl:` and `wait:` values also raise.
+- Non-`StandardError` exceptions (`Interrupt`, `SignalException`,
+  `Sidekiq::Shutdown`, ...) bypassed `on_error`, leaving the lock held even with
+  `:unlock`. The lock is now released for every strategy except `:keep`.
+- A lock conflict that reached the database (two callers racing on a new name)
+  inside a caller's transaction aborted that transaction on PostgreSQL
+  (`PG::InFailedSqlTransaction`). Acquisition now runs in a savepoint.
+- `IdempotencyLock.logger = nil` was ignored in Rails apps (it fell back to
+  `Rails.logger`), and the lookup crashed when `Rails` was defined without a
+  `logger` method.
+- Fractional `ttl:` values were truncated to whole seconds.
+
+### Changed
+
+- Requiring the gem no longer loads `ActiveRecord::Base` eagerly; the model is
+  autoloaded on first use, so host-app ActiveRecord configuration is respected.
+  The gem now requires `active_record` / `active_support` itself.
+- Expired-lock claims use the owner token (instead of `updated_at`) as the
+  optimistic-lock version, avoiding timestamp-precision edge cases.
+- `Lock.acquire` returns the owner token (or `nil`) instead of `true`/`false`;
+  `Lock.release` accepts an optional `owner_token:`. Truthiness is unchanged.
+- Dropped the `uniqueness` validation on `Lock#name`; the unique index already
+  enforces it, saving a `SELECT` per acquisition.
+- `Result#inspect` shows the class of the value rather than its contents, to
+  avoid leaking sensitive data into logs and error trackers.
+- `temporarily` wait loop uses a monotonic clock.
+- The Railtie no longer overwrites a configured logger.
+
+### Added
+
+- `on_error:` for `temporarily` (`:raise` or a callable).
+- `rails generate idempotency_lock:upgrade` generator.
+- `on_error:` accepts any object responding to `call`, not only Procs.
+- RBS signatures for the public API.
+- CI: Ruby 3.2–3.4 × ActiveRecord 7.1–8.1, plus PostgreSQL and MySQL jobs;
+  read-only token permissions and SHA-pinned actions.
+
+### Documentation
+
+- Clarified that `once` is *at most once*, not exactly once, and documented
+  error-swallowing, interrupt, transaction, and clock-skew behavior.
+- Fixed the Sidekiq example (it used `:unlock`, which swallows the error so
+  Sidekiq never retries) and the webhook example (now verifies the signature
+  before taking a lock). Added a Security Considerations section.
+
+## [0.2.0] - 2026-01-24
 
 ### Added
 

@@ -1,4 +1,56 @@
 module IdempotencyLock
   VERSION: String
-  # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+  class Error < StandardError
+  end
+
+  ON_ERROR_UNLOCK: :unlock
+  ON_ERROR_KEEP_LOCKED: :keep
+  ON_ERROR_RAISE: :raise
+  ON_ERROR_STRATEGIES: Array[Symbol]
+  TEMPORARY_ON_ERROR_STRATEGIES: Array[Symbol?]
+  MAX_NAME_LENGTH: Integer
+  WAIT_RETRY_INTERVAL: Float
+
+  interface _ErrorHandler
+    def call: (StandardError) -> untyped
+  end
+
+  type lock_name = String | Symbol
+  type duration = Numeric
+  type on_error = :keep | :unlock | :raise | _ErrorHandler
+  type temporary_on_error = :raise | _ErrorHandler | nil
+
+  def self.once: [T] (lock_name name, ?ttl: duration?, ?on_error: on_error) { () -> T } -> Result[T]
+  def self.wrap: [T] (lock_name name, ?ttl: duration?, ?on_error: on_error) { () -> T } -> Result[T]
+  def self.temporarily: [T] (lock_name name, ?ttl: duration?, ?wait: duration?, ?on_error: temporary_on_error) { () -> T } -> Result[T]
+  def self.release: (lock_name name) -> bool
+  def self.locked?: (lock_name name) -> bool
+  def self.cleanup_expired: () -> Integer
+  def self.logger: () -> untyped
+  def self.logger=: (untyped logger) -> untyped
+
+  class Result[T]
+    attr_reader value: T?
+    attr_reader error: StandardError?
+
+    def initialize: (executed: bool, ?value: T?, ?skipped: bool, ?error: StandardError?) -> void
+    def executed?: () -> bool
+    def skipped?: () -> bool
+    def error?: () -> bool
+    def success?: () -> bool
+    def inspect: () -> String
+  end
+
+  class Lock
+    MAX_NAME_LENGTH: Integer
+
+    def self.acquire: (String name, ?expires_at: Time?, ?now: Time) -> String?
+    def self.release: (String name, ?owner_token: String?) -> bool
+    def self.locked?: (String name, ?now: Time) -> bool
+    def self.cleanup_expired: (?now: Time) -> Integer
+
+    def expired?: (?now: Time) -> bool
+    def valid_lock?: (?now: Time) -> bool
+  end
 end

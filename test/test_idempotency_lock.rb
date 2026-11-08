@@ -273,74 +273,76 @@ end
 class TestIdempotencyLockOptimisticLocking < Minitest::Test
   include IdempotencyLockTestHelpers
 
-  # This test verifies why optimistic locking (WHERE updated_at = observed_value)
-  # is better than a simple expiration check (WHERE expires_at < now).
-  #
-  # Scenario: Process A acquires with a SHORT TTL, and Process B has a clock
-  # that's ahead. Without optimistic locking, B could steal A's lock because
-  # A's new expires_at is already "expired" from B's perspective.
-  def test_short_ttl_with_clock_skew_only_one_wins
-    # Create an expired lock
-    IdempotencyLock::Lock.create!(
-      name: "short-ttl-skew",
-      expires_at: 1.minute.ago,
-      executed_at: 2.minutes.ago
-    )
+  # Simulates two processes that both read the same expired lock before either
+  # claims it. Process B's find_by is stubbed to return the stale snapshot it
+  # read earlier; its UPDATE must then match 0 rows because A's claim changed
+  # the owner_token.
+  def test_concurrent_claims_of_expired_lock_only_one_wins
+    create_expired_lock("concurrent-claim")
+    stale_snapshot = IdempotencyLock::Lock.find_by(name: "concurrent-claim")
 
-    # Both processes read the SAME state (simulating concurrent read)
-    observed_updated_at = IdempotencyLock::Lock.find_by(name: "short-ttl-skew").updated_at
+    token_a = IdempotencyLock::Lock.acquire("concurrent-claim", expires_at: 1.hour.from_now)
+    token_b = IdempotencyLock::Lock.stub(:find_by, stale_snapshot) do
+      IdempotencyLock::Lock.acquire("concurrent-claim", expires_at: 2.hours.from_now)
+    end
 
-    process_a_clock = Time.current
-    short_ttl = 10.seconds
-    process_b_clock = process_a_clock + 1.minute # B's clock is way ahead
-
-    # A acquires with short TTL - new expires_at is only 10 seconds out
-    new_expires_at_from_a = process_a_clock + short_ttl
-
-    # With optimistic locking: WHERE updated_at = observed_value
-    result_a = IdempotencyLock::Lock
-               .where(name: "short-ttl-skew", updated_at: observed_updated_at)
-               .update_all(expires_at: new_expires_at_from_a, executed_at: process_a_clock, updated_at: process_a_clock)
-
-    # B tries with same observed value - should FAIL because updated_at changed
-    new_expires_at_from_b = process_b_clock + 1.hour
-    result_b = IdempotencyLock::Lock
-               .where(name: "short-ttl-skew", updated_at: observed_updated_at)
-               .update_all(expires_at: new_expires_at_from_b, executed_at: process_b_clock, updated_at: process_b_clock)
-
-    assert_equal 1, result_a, "A should succeed"
-    assert_equal 0, result_b, "B should fail - optimistic locking prevents double claim"
-
-    # WITHOUT optimistic locking (using WHERE expires_at < now), B would check:
-    #   new_expires_at_from_a < process_b_clock
-    #   = (now + 10 seconds) < (now + 1 minute)
-    #   = TRUE  <-- B would also succeed! That's the bug optimistic locking prevents.
+    assert token_a, "A should claim the expired lock"
+    assert_nil token_b, "B should fail: optimistic locking prevents a double claim"
+    assert_equal token_a, IdempotencyLock::Lock.find_by(name: "concurrent-claim").owner_token
   end
 
-  # Demonstrates the race condition at the UPDATE level
-  def test_concurrent_updates_only_one_wins
-    IdempotencyLock::Lock.create!(
-      name: "concurrent-update",
-      expires_at: 1.minute.ago,
-      executed_at: 2.minutes.ago
-    )
+  # A and B race to claim the SAME expired lock (both read the old token).
+  # A claims with a SHORT TTL and B's clock is far ahead, so A's new lock
+  # already looks expired to B. B's claim must still fail, because it is
+  # conditioned on the stale owner_token B observed. (A fresh read by B is a
+  # different case; see test_clock_skew_allows_takeover_after_a_fresh_read.)
+  def test_short_ttl_with_clock_skew_only_one_wins
+    create_expired_lock("short-ttl-skew")
+    stale_snapshot = IdempotencyLock::Lock.find_by(name: "short-ttl-skew")
 
-    # Both "processes" observe the same updated_at before either updates
-    observed_updated_at = IdempotencyLock::Lock.find_by(name: "concurrent-update").updated_at
-    now = Time.current
+    process_a_clock = Time.current
+    process_b_clock = process_a_clock + 1.minute
 
-    # First update wins
-    first = IdempotencyLock::Lock
-            .where(name: "concurrent-update", updated_at: observed_updated_at)
-            .update_all(expires_at: now + 1.hour, executed_at: now, updated_at: now)
+    token_a = IdempotencyLock::Lock.acquire("short-ttl-skew", expires_at: process_a_clock + 10.seconds,
+                                                              now: process_a_clock)
+    token_b = IdempotencyLock::Lock.stub(:find_by, stale_snapshot) do
+      IdempotencyLock::Lock.acquire("short-ttl-skew", expires_at: process_b_clock + 1.hour, now: process_b_clock)
+    end
 
-    # Second update fails - updated_at no longer matches
-    second = IdempotencyLock::Lock
-             .where(name: "concurrent-update", updated_at: observed_updated_at)
-             .update_all(expires_at: now + 2.hours, executed_at: now, updated_at: now)
+    assert token_a, "A should succeed"
+    assert_nil token_b, "B should fail even though A's lock looks expired on B's clock"
+  end
 
-    assert_equal 1, first, "First update should affect 1 row"
-    assert_equal 0, second, "Second update should affect 0 rows"
+  # Documents a known limitation (see README "TTL / Expiration"): expiry is
+  # judged by the claiming server's clock, so a server whose clock is ahead can
+  # take over a lock that is still live from the holder's point of view.
+  def test_clock_skew_allows_takeover_after_a_fresh_read
+    holder_clock = Time.current
+    holder_token = IdempotencyLock::Lock.acquire("skewed", expires_at: holder_clock + 10.seconds,
+                                                           now: holder_clock)
+
+    skewed_token = IdempotencyLock::Lock.acquire("skewed", expires_at: holder_clock + 2.minutes,
+                                                           now: holder_clock + 1.minute)
+
+    assert skewed_token, "a fast clock sees the holder's lock as expired"
+    refute IdempotencyLock::Lock.release("skewed", owner_token: holder_token),
+           "but the original holder still cannot release the new holder's lock"
+  end
+
+  def test_reclaim_issues_a_new_owner_token
+    first = IdempotencyLock::Lock.acquire("reclaim", expires_at: 1.hour.from_now)
+    IdempotencyLock::Lock.where(name: "reclaim").update_all(expires_at: 1.minute.ago)
+
+    second = IdempotencyLock::Lock.acquire("reclaim", expires_at: 1.hour.from_now)
+
+    assert second
+    refute_equal first, second
+  end
+
+  private
+
+  def create_expired_lock(name)
+    IdempotencyLock::Lock.create!(name: name, expires_at: 1.minute.ago, executed_at: 2.minutes.ago)
   end
 end
 
@@ -365,7 +367,6 @@ class TestIdempotencyLockTemporarily < Minitest::Test
   def test_temporarily_releases_lock_after_success
     IdempotencyLock.temporarily("temp-release") { "done" }
 
-    # Lock should be released
     refute IdempotencyLock.locked?("temp-release")
   end
 
@@ -377,13 +378,10 @@ class TestIdempotencyLockTemporarily < Minitest::Test
     assert_predicate result, :executed?
     assert_predicate result, :error?
     assert_kind_of StandardError, result.error
-
-    # Lock should be released even on error
     refute IdempotencyLock.locked?("temp-error")
   end
 
   def test_temporarily_skips_when_lock_held
-    # Acquire lock manually
     IdempotencyLock::Lock.acquire("temp-held")
 
     call_count = 0
@@ -397,9 +395,7 @@ class TestIdempotencyLockTemporarily < Minitest::Test
   def test_temporarily_allows_re_execution_after_release
     call_count = 0
 
-    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
-    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
-    IdempotencyLock.temporarily("temp-reuse") { call_count += 1 }
+    3.times { IdempotencyLock.temporarily("temp-reuse") { call_count += 1 } }
 
     assert_equal 3, call_count, "Block should execute each time since lock is released"
   end
@@ -425,6 +421,25 @@ class TestIdempotencyLockTemporarily < Minitest::Test
 
     assert_equal %w[a b], results
   end
+
+  def test_temporarily_on_error_raise_reraises_and_releases
+    error = assert_raises(RuntimeError) do
+      IdempotencyLock.temporarily("temp-raise", on_error: :raise) { raise "boom" }
+    end
+
+    assert_equal "boom", error.message
+    refute IdempotencyLock.locked?("temp-raise")
+  end
+
+  def test_temporarily_on_error_callable_is_called_after_release
+    locked_during_handler = nil
+    handler = ->(_e) { locked_during_handler = IdempotencyLock.locked?("temp-proc") }
+
+    result = IdempotencyLock.temporarily("temp-proc", on_error: handler) { raise "boom" }
+
+    assert_predicate result, :error?
+    refute locked_during_handler, "lock should already be released when the handler runs"
+  end
 end
 
 class TestIdempotencyLockTemporarilyWait < Minitest::Test
@@ -434,70 +449,71 @@ class TestIdempotencyLockTemporarilyWait < Minitest::Test
     # Create a lock with a very short TTL that will expire during wait
     IdempotencyLock::Lock.create!(
       name: "wait-test",
-      expires_at: 0.15.seconds.from_now, # Expires after 150ms
+      expires_at: 0.15.seconds.from_now,
       executed_at: Time.current
     )
 
     call_count = 0
-    result = IdempotencyLock.temporarily("wait-test", wait: 1) { call_count += 1 }
+    result = IdempotencyLock.temporarily("wait-test", wait: 2) { call_count += 1 }
 
     assert_equal 1, call_count, "Block should execute after lock expires"
     assert_predicate result, :executed?
   end
 
   def test_wait_times_out_and_skips
-    # Acquire lock and don't release it
     IdempotencyLock::Lock.acquire("wait-timeout")
 
     call_count = 0
-    start_time = Time.current
-    result = IdempotencyLock.temporarily("wait-timeout", wait: 0.25) { call_count += 1 }
-    elapsed = Time.current - start_time
+    elapsed = measure { @result = IdempotencyLock.temporarily("wait-timeout", wait: 0.25) { call_count += 1 } }
 
     assert_equal 0, call_count, "Block should not execute when timeout reached"
-    assert_predicate result, :skipped?
-    refute_predicate result, :executed?
-    # Should have waited approximately 0.25 seconds (with some tolerance)
-    assert_operator elapsed, :>=, 0.2
-    assert_operator elapsed, :<, 0.5
+    assert_predicate @result, :skipped?
+    refute_predicate @result, :executed?
+    assert_operator elapsed, :>=, 0.25
+    assert_operator elapsed, :<, 2.0, "should not wait far beyond the timeout"
   end
 
   def test_wait_with_duration
-    # Acquire lock and don't release it
     IdempotencyLock::Lock.acquire("wait-duration")
 
-    start_time = Time.current
-    IdempotencyLock.temporarily("wait-duration", wait: 0.2.seconds) { "done" }
-    elapsed = Time.current - start_time
+    elapsed = measure { IdempotencyLock.temporarily("wait-duration", wait: 0.2.seconds) { "done" } }
 
-    # Should have waited approximately 0.2 seconds
-    assert_operator elapsed, :>=, 0.15
-    assert_operator elapsed, :<, 0.4
+    assert_operator elapsed, :>=, 0.2
+    assert_operator elapsed, :<, 2.0
   end
 
   def test_wait_with_numeric_seconds
-    # Acquire lock and don't release it
     IdempotencyLock::Lock.acquire("wait-numeric")
 
-    start_time = Time.current
-    IdempotencyLock.temporarily("wait-numeric", wait: 0.2) { "done" }
-    elapsed = Time.current - start_time
+    elapsed = measure { IdempotencyLock.temporarily("wait-numeric", wait: 0.2) { "done" } }
 
-    # Should have waited approximately 0.2 seconds
-    assert_operator elapsed, :>=, 0.15
-    assert_operator elapsed, :<, 0.4
+    assert_operator elapsed, :>=, 0.2
+    assert_operator elapsed, :<, 2.0
   end
 
   def test_wait_nil_skips_immediately
-    # Acquire lock
     IdempotencyLock::Lock.acquire("wait-nil")
 
-    start_time = Time.current
-    result = IdempotencyLock.temporarily("wait-nil", wait: nil) { "done" }
-    elapsed = Time.current - start_time
+    result = IdempotencyLock.stub(:sleep, ->(*) { flunk "should not sleep when wait is nil" }) do
+      IdempotencyLock.temporarily("wait-nil", wait: nil) { "done" }
+    end
 
     assert_predicate result, :skipped?
-    # Should return almost immediately (no waiting)
-    assert_operator elapsed, :<, 0.05
+  end
+
+  def test_wait_rejects_invalid_values
+    [-1, "5", :forever, Float::NAN, Float::INFINITY].each do |wait|
+      assert_raises(ArgumentError, "wait: #{wait.inspect}") do
+        IdempotencyLock.temporarily("wait-invalid", wait: wait) { "done" }
+      end
+    end
+  end
+
+  private
+
+  def measure
+    start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
   end
 end

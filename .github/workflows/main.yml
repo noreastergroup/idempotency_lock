@@ -7,23 +7,113 @@ on:
 
   pull_request:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }}
-    strategy:
-      matrix:
-        ruby:
-          - '3.4.5'
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
 
+# Third-party actions are pinned to full commit SHAs (tag in the comment) so a
+# moved or compromised tag cannot change what runs here.
+
+jobs:
+  lint:
+    name: RuboCop
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rubocop
+
+  sqlite:
+    name: Ruby ${{ matrix.ruby }} / ActiveRecord ${{ matrix.activerecord }} / SQLite
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.2", "3.3", "3.4"]
+        activerecord: ["7.1", "7.2", "8.0", "8.1"]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activerecord_${{ matrix.activerecord }}.gemfile
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run the default task
-        run: bundle exec rake
+      - run: bundle exec rake test
+
+  postgres:
+    name: Ruby 3.4 / ActiveRecord ${{ matrix.activerecord }} / PostgreSQL
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        activerecord: ["7.1", "8.1"]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: idempotency_lock_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activerecord_${{ matrix.activerecord }}.gemfile
+      BUNDLE_WITH: postgres
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/idempotency_lock_test?pool=20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rake test
+
+  mysql:
+    name: Ruby 3.4 / ActiveRecord ${{ matrix.activerecord }} / MySQL
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        activerecord: ["7.1", "8.1"]
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: idempotency_lock_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activerecord_${{ matrix.activerecord }}.gemfile
+      BUNDLE_WITH: mysql
+      DATABASE_URL: mysql2://root:root@127.0.0.1:3306/idempotency_lock_test?pool=20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install MySQL client headers (for mysql2)
+        run: sudo apt-get update && sudo apt-get install -y libmysqlclient-dev
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: bundle exec rake test

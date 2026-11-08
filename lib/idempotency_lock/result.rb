@@ -41,11 +41,15 @@ module IdempotencyLock
       @executed && !error?
     end
 
-    # @return [String] human-readable representation for debugging
+    # Human-readable representation for debugging. Shows only the class of the
+    # value, not its contents, so inspecting a Result (in logs or error
+    # trackers) does not leak sensitive return values.
+    #
+    # @return [String]
     def inspect
       parts = ["executed=#{@executed}"]
       parts << "skipped=#{@skipped}" if @skipped
-      parts << "value=#{@value.inspect}" if @value
+      parts << "value=#{@value.class}" unless @value.nil?
       parts << "error=#{@error.class}" if @error
       "#<IdempotencyLock::Result #{parts.join(" ")}>"
     end

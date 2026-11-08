@@ -14,7 +14,7 @@ Style/StringLiteralsInInterpolation:
 
 # The main module is a cohesive unit - allow reasonable size
 Metrics/ModuleLength:
-  Max: 125
+  Max: 140
 
 # The class << self block contains all public/private methods
 Metrics/ClassLength:
@@ -31,9 +31,9 @@ Metrics/AbcSize:
   Exclude:
     - "test/**/*"
 
-# `acquire` and `release` are standard lock operation names
+# Lock operations that report success as a boolean
 Naming/PredicateMethod:
   AllowedMethods:
-    - acquire
     - release
-    - acquire_with_wait
+    - insert_lock
+    - claim_expired
